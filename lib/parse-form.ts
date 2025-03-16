@@ -3,81 +3,114 @@ import { mkdir, stat } from 'fs/promises';
 import fs from 'fs';
 import path from 'path';
 
+// Type pour le fichier téléchargé
+export interface UploadedFile {
+  filepath: string;
+  originalFilename: string;
+  mimetype: string;
+  size: number;
+}
+
+// Type pour les résultats du parsing de formulaire
+export interface ParsedForm {
+  fields: any;
+  files: {
+    [key: string]: UploadedFile[];
+  };
+}
+
 /**
- * Parseur de formulaires avec upload de fichiers
+ * Parser un formulaire multipart depuis une requête
  */
-export const parseForm = async (req: Request) => {
+export async function parseForm(req: Request): Promise<ParsedForm> {
+  // Assurer que le dossier d'upload existe
   const uploadDir = path.join(process.cwd(), 'uploads');
   
-  // Vérifier si le répertoire existe, sinon le créer
   try {
     await stat(uploadDir);
-  } catch (e) {
-    if ((e as any).code === 'ENOENT') {
+  } catch (e: any) {
+    if (e.code === 'ENOENT') {
       await mkdir(uploadDir, { recursive: true });
     } else {
-      console.error('Error checking uploads directory:', e);
+      console.error('Erreur lors de la vérification du dossier d\'uploads:', e);
       throw e;
     }
   }
 
-  // Convertir en buffer pour pouvoir traiter le formulaire
-  const data = await req.arrayBuffer();
-  const buffer = Buffer.from(data);
+  // Créer un Stream à partir des données de la requête
+  const chunks = [];
+  const readableStream = req.body;
+  if (!readableStream) {
+    throw new Error('Request body is not a readable stream');
+  }
   
-  return new Promise<{ fields: any; files: any }>((resolve, reject) => {
+  // @ts-ignore - Next.js Request body can be read as a stream
+  for await (const chunk of readableStream) {
+    chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+  }
+  
+  const buffer = Buffer.concat(chunks);
+  
+  // Écrire temporairement le buffer dans un fichier
+  const tempFilePath = path.join(uploadDir, `temp-${Date.now()}.bin`);
+  fs.writeFileSync(tempFilePath, buffer);
+  
+  // Extraire le boundary du Content-Type header
+  const contentType = req.headers.get('content-type') || '';
+  const boundaryMatch = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
+  
+  if (!boundaryMatch) {
+    throw new Error('Could not determine form data boundary');
+  }
+  
+  // Parser le formulaire avec formidable
+  return new Promise((resolve, reject) => {
     const form = new IncomingForm({
+      multiples: true,
       uploadDir,
       keepExtensions: true,
-      multiples: true,
+      maxFileSize: 10 * 1024 * 1024, // 10MB
     });
-
-    // Créer un objet pour simuler une requête HTTP pour formidable
-    const mockReq = {
-      headers: req.headers,
-      pipe: (stream: any) => stream.end(buffer),
-      on: (event: string, cb: Function) => {
-        if (event === 'end') setTimeout(cb, 0);
-        return mockReq;
-      },
-    };
-
-    form.parse(mockReq as any, (err, fields, files) => {
+    
+    form.parse(fs.createReadStream(tempFilePath), (err: any, fields: any, files: any) => {
+      // Supprimer le fichier temporaire
+      try {
+        fs.unlinkSync(tempFilePath);
+      } catch (e) {
+        console.error('Erreur lors de la suppression du fichier temporaire:', e);
+      }
+      
       if (err) {
-        console.error('Error parsing form data:', err);
         reject(err);
         return;
       }
       
-      // Normalisation des fichiers pour avoir un format standard
-      const normalizedFiles: Record<string, any[]> = {};
+      // Convertir les fichiers au format attendu
+      const parsedFiles: { [key: string]: UploadedFile[] } = {};
       
-      Object.keys(files).forEach(key => {
-        const file = files[key];
-        if (Array.isArray(file)) {
-          normalizedFiles[key] = file;
-        } else {
-          normalizedFiles[key] = [file];
-        }
+      Object.keys(files).forEach(fieldName => {
+        const fileArray = Array.isArray(files[fieldName]) ? files[fieldName] : [files[fieldName]];
+        
+        parsedFiles[fieldName] = fileArray.map(file => ({
+          filepath: file.filepath,
+          originalFilename: file.originalFilename || 'unknown',
+          mimetype: file.mimetype || 'application/octet-stream',
+          size: file.size || 0
+        }));
       });
       
-      resolve({ fields, files: normalizedFiles });
+      resolve({
+        fields,
+        files: parsedFiles
+      });
     });
   });
-};
+}
 
 /**
- * Lit un fichier et retourne son contenu en base64
+ * Lire un fichier en Base64
  */
-export const getFileAsBase64 = (filePath: string): Promise<string> => {
-  return new Promise((resolve, reject) => {
-    fs.readFile(filePath, (err, data) => {
-      if (err) {
-        reject(err);
-        return;
-      }
-      
-      resolve(data.toString('base64'));
-    });
-  });
-};
+export function readFileAsBase64(filepath: string): string {
+  const buffer = fs.readFileSync(filepath);
+  return buffer.toString('base64');
+}
