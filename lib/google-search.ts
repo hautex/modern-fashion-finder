@@ -1,8 +1,7 @@
-/**
- * Service de recherche de produits avec Google Custom Search
- */
+import axios from 'axios';
 
-export interface SearchResult {
+// Définition du type pour un produit
+export interface Product {
   id: string;
   name: string;
   brand: string;
@@ -14,139 +13,160 @@ export interface SearchResult {
   similarity: number;
 }
 
-interface SearchAttributes {
-  category: string;
-  color: string;
-  pattern: string;
-  style: string;
-  colorName: string;
-}
-
 /**
- * Rechercher des produits similaires avec Google Custom Search
+ * Recherche des produits similaires en utilisant Google Custom Search API
+ * @param query - Termes de recherche
+ * @returns Liste de produits
  */
-export async function searchSimilarProducts(attributes: SearchAttributes): Promise<SearchResult[]> {
+export const searchSimilarProducts = async (
+  query: string,
+  options: { 
+    limit?: number; 
+    exactTerms?: string;
+    excludeTerms?: string;
+  } = {}
+): Promise<Product[]> => {
   try {
+    // Récupérer les clés API depuis les variables d'environnement
     const apiKey = process.env.GOOGLE_CUSTOM_SEARCH_API_KEY;
     const searchEngineId = process.env.GOOGLE_CUSTOM_SEARCH_ENGINE_ID;
     
     if (!apiKey || !searchEngineId) {
-      throw new Error('Google Custom Search API configuration is missing');
+      throw new Error('Google API keys not defined');
     }
 
-    // Construire la requête de recherche basée sur les attributs du vêtement
-    const searchQuery = buildSearchQuery(attributes);
+    // Définir le nombre de résultats à récupérer (max 10 par requête)
+    const limit = options.limit || 8;
     
-    // Effectuer la recherche avec Google Custom Search API
-    const response = await fetch(
-      `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${searchEngineId}&q=${encodeURIComponent(searchQuery)}&num=10&searchType=shopping`,
-      {
-        method: 'GET',
-        headers: {
-          'Accept': 'application/json',
-        },
-      }
-    );
+    // Construire la requête pour Google Custom Search
+    let url = `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${searchEngineId}&q=${encodeURIComponent(query)}&num=${limit}`;
+    
+    // Ajouter des termes de recherche exacts si spécifiés
+    if (options.exactTerms) {
+      url += `&exactTerms=${encodeURIComponent(options.exactTerms)}`;
+    }
+    
+    // Ajouter des termes à exclure si spécifiés
+    if (options.excludeTerms) {
+      url += `&excludeTerms=${encodeURIComponent(options.excludeTerms)}`;
+    }
+    
+    // Spécifier que nous voulons des résultats de Shopping
+    url += '&siteSearch=google.com/shopping&siteSearchFilter=i';
 
-    if (!response.ok) {
-      const errorData = await response.json();
-      console.error('Google Custom Search API Error:', errorData);
-      throw new Error(`Google Custom Search API error: ${response.status}`);
+    // Envoyer la requête à Google Custom Search
+    const response = await axios.get(url);
+    
+    // Vérifier si des résultats ont été trouvés
+    if (!response.data.items || response.data.items.length === 0) {
+      console.log('Aucun résultat trouvé pour la requête:', query);
+      return [];
     }
 
-    const data = await response.json();
-    
-    // Parser les résultats
-    const items = data.items || [];
-    
-    // Transformer les résultats en format standard
-    const results: SearchResult[] = items.map((item: any, index: number) => {
-      // Calculer un score de similarité décroissant (le premier résultat a le meilleur score)
-      const similarity = Math.max(0.35, 0.95 - (index * 0.07));
-      
-      // Extraire les informations de prix si disponibles
+    // Transformer les résultats en liste de produits
+    return response.data.items.map((item: any, index: number) => {
+      // Extraire le prix s'il est présent (format potentiel: "€39,99", "$49.99", etc.)
       let price = 0;
       let currency = '€';
       
-      if (item.pagemap?.offer?.[0]?.price) {
-        const priceString = item.pagemap.offer[0].price;
-        // Extraire le nombre du string de prix (e.g. "€29.99" -> 29.99)
-        const priceMatch = priceString.match(/[\d,.]+/);
-        if (priceMatch) {
-          price = parseFloat(priceMatch[0].replace(',', '.'));
-          // Extraire le symbole de devise (€, $, etc.)
-          const currencyMatch = priceString.match(/[^\d,.]/);
-          if (currencyMatch) {
-            currency = currencyMatch[0];
-          }
-        }
-      } else if (item.pagemap?.product?.[0]?.price) {
-        const priceString = item.pagemap.product[0].price;
-        const priceMatch = priceString.match(/[\d,.]+/);
-        if (priceMatch) {
-          price = parseFloat(priceMatch[0].replace(',', '.'));
-          const currencyMatch = priceString.match(/[^\d,.]/);
-          if (currencyMatch) {
-            currency = currencyMatch[0];
-          }
-        }
-      }
+      const priceMatch = item.title.match(/[€$£¥](\d+[,.]\d+|\d+)/) || 
+                         item.snippet?.match(/[€$£¥](\d+[,.]\d+|\d+)/);
       
-      // Si aucun prix n'a été trouvé, générer un prix aléatoire
-      if (price === 0) {
-        price = Math.floor(Math.random() * 50) + 19.99;
-      }
-      
-      // Extraire l'image
-      let imageUrl = '';
-      if (item.pagemap?.cse_image?.[0]?.src) {
-        imageUrl = item.pagemap.cse_image[0].src;
-      } else if (item.pagemap?.cse_thumbnail?.[0]?.src) {
-        imageUrl = item.pagemap.cse_thumbnail[0].src;
+      if (priceMatch) {
+        const currencySymbol = priceMatch[0][0];
+        const currencyMap: Record<string, string> = { '€': '€', '$': '$', '£': '£', '¥': '¥' };
+        currency = currencyMap[currencySymbol] || '€';
+        
+        // Extraire la valeur numérique et remplacer les virgules par des points
+        const priceValue = priceMatch[1].replace(',', '.');
+        price = parseFloat(priceValue);
       } else {
-        // Image de remplacement si aucune image n'est disponible
-        imageUrl = `https://source.unsplash.com/random/300x400?${attributes.category},${attributes.colorName}`;
+        // Prix par défaut si non trouvé
+        price = 20 + Math.floor(Math.random() * 80);
       }
       
-      // Extraire la marque
-      let brand = 'Marque inconnue';
-      if (item.pagemap?.product?.[0]?.brand) {
-        brand = item.pagemap.product[0].brand;
-      } else if (item.displayLink) {
-        // Utiliser le nom de domaine comme nom de marque par défaut
-        brand = item.displayLink.replace(/^www\./, '').split('.')[0];
-        // Mettre la première lettre en majuscule
-        brand = brand.charAt(0).toUpperCase() + brand.slice(1);
+      // Extraire le nom de la marque (généralement avant le premier tiret ou parenthèse)
+      let brand = 'Marque';
+      let name = item.title;
+      
+      const brandSeparators = [' - ', ' | ', ' : ', ' – ', ' — '];
+      for (const separator of brandSeparators) {
+        if (item.title.includes(separator)) {
+          const parts = item.title.split(separator);
+          brand = parts[0].trim();
+          name = parts.slice(1).join(separator).trim();
+          break;
+        }
       }
+      
+      // Si aucun séparateur n'est trouvé, utiliser le premier mot comme marque
+      if (brand === 'Marque') {
+        const words = item.title.split(' ');
+        if (words.length > 1) {
+          brand = words[0];
+          name = words.slice(1).join(' ');
+        }
+      }
+
+      // Extraire l'URL de l'image si disponible
+      let imageUrl = item.pagemap?.cse_image?.[0]?.src || 
+                    item.pagemap?.cse_thumbnail?.[0]?.src;
+      
+      // Fallback si aucune image n'est trouvée
+      if (!imageUrl) {
+        imageUrl = 'https://via.placeholder.com/300x400?text=Image+Non+Disponible';
+      }
+      
+      // Extraire la source (nom du site)
+      const source = new URL(item.link).hostname.replace('www.', '').split('.')[0];
+      
+      // Calculer un score de similarité (décroissant avec l'index)
+      const similarity = Math.max(0.2, 1 - (index * 0.1));
       
       return {
         id: `google-${index}-${Date.now()}`,
-        name: item.title || `${attributes.style} ${attributes.category} ${attributes.pattern} ${attributes.colorName}`,
+        name,
         brand,
         price,
         currency,
         imageUrl,
         productUrl: item.link,
-        source: item.displayLink || 'Google Shopping',
+        source: source.charAt(0).toUpperCase() + source.slice(1),
         similarity
       };
     });
-    
-    return results;
   } catch (error) {
     console.error('Error searching for similar products:', error);
     throw error;
   }
-}
+};
 
 /**
- * Construire une requête de recherche à partir des attributs du vêtement
+ * Construit une requête de recherche basée sur les attributs détectés
+ * @param attributes Caractéristiques du vêtement détecté
+ * @returns Chaîne de recherche optimisée
  */
-function buildSearchQuery(attributes: SearchAttributes): string {
-  let query = `${attributes.category} ${attributes.colorName} ${attributes.pattern} ${attributes.style}`;
+export const buildSearchQuery = (attributes: {
+  category: string;
+  colorName: string;
+  pattern: string;
+  style: string;
+}): string => {
+  // Construire une requête de base
+  let query = `${attributes.colorName} ${attributes.category}`;
   
-  // Ajouter des termes supplémentaires pour améliorer les résultats
-  query += ' acheter vêtement';
+  // Ajouter le motif s'il n'est pas "uni"
+  if (attributes.pattern !== 'uni') {
+    query += ` ${attributes.pattern}`;
+  }
+  
+  // Ajouter le style s'il est significatif
+  if (attributes.style && attributes.style !== 'casual' && attributes.style !== 'décontracté') {
+    query += ` ${attributes.style}`;
+  }
+  
+  // Ajouter des termes pour améliorer les résultats
+  query += ' acheter vêtement mode';
   
   return query;
-}
+};
