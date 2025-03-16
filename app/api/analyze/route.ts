@@ -1,30 +1,33 @@
 import { NextResponse } from 'next/server';
-import { parseForm, getFileAsBase64 } from '@/lib/parse-form';
-import { analyzeImageWithGoogleVision, extractClothingInfo } from '@/lib/google-vision';
-import { buildSearchQuery, searchSimilarProducts, SearchResult } from '@/lib/google-search';
+import { parseForm, readFileAsBase64 } from '@/lib/parse-form';
+import { analyzeImageWithVision, getColorName } from '@/lib/google-vision';
+import { searchSimilarProducts, SearchResult } from '@/lib/google-search';
 
 // Définition du type de réponse
 export type AnalysisResponse = {
   attributes: {
     color: string;
-    colorName: string;
     category: string;
     pattern: string;
     style: string;
+    colorName: string;
   };
   products: SearchResult[];
 };
 
+/**
+ * API Route: POST /api/analyze
+ * Analyse une image et cherche des produits similaires
+ */
 export async function POST(request: Request) {
   try {
-    console.log('Analyzing image request received');
+    console.log('Receiving image analysis request...');
     
     // Parsing multipart form data
     const { files } = await parseForm(request);
     
     // Vérifiez qu'un fichier a été téléchargé
     if (!files.image || !files.image[0]) {
-      console.error('No image provided in request');
       return NextResponse.json(
         { error: 'Aucune image fournie' },
         { status: 400 }
@@ -32,110 +35,110 @@ export async function POST(request: Request) {
     }
 
     const file = files.image[0];
-    console.log(`Image uploaded: ${file.originalFilename}, size: ${file.size} bytes`);
+    console.log(`Image received: ${file.originalFilename}, size: ${file.size} bytes`);
     
     try {
-      // Convertir l'image en base64
-      const imageBase64 = await getFileAsBase64(file.filepath);
+      // 1. Convertir l'image en base64 pour l'API Vision
+      const imageBase64 = readFileAsBase64(file.filepath);
       console.log('Image converted to base64');
       
-      // Analyser l'image avec Google Vision API
-      const visionResult = await analyzeImageWithGoogleVision(imageBase64);
-      console.log('Vision API analysis complete');
+      // 2. Analyser l'image avec Google Vision API
+      console.log('Analyzing image with Google Vision API...');
+      const visionResult = await analyzeImageWithVision(imageBase64);
+      console.log('Vision API analysis complete:', visionResult);
       
-      // Extraire les informations sur le vêtement
-      const clothingInfo = extractClothingInfo(visionResult);
-      console.log('Clothing information extracted:', clothingInfo);
+      // 3. Obtenir le nom de la couleur principale
+      const colorName = getColorName(visionResult.mainColor);
+      console.log(`Main color: ${visionResult.mainColor} (${colorName})`);
       
-      // Créer une requête de recherche
-      const searchQuery = buildSearchQuery(
-        clothingInfo.category,
-        clothingInfo.colorName,
-        clothingInfo.pattern,
-        clothingInfo.style
-      );
-      console.log('Search query built:', searchQuery);
+      // 4. Rechercher des produits similaires avec Google Custom Search
+      console.log('Searching for similar products...');
+      const searchAttributes = {
+        category: visionResult.category,
+        color: visionResult.mainColor,
+        pattern: visionResult.pattern,
+        style: visionResult.style,
+        colorName
+      };
       
-      // Rechercher des produits similaires
-      const products = await searchSimilarProducts(searchQuery, 12);
-      console.log(`${products.length} similar products found`);
+      const products = await searchSimilarProducts(searchAttributes);
+      console.log(`Found ${products.length} similar products`);
       
-      // Construire et renvoyer la réponse
+      // 5. Construire et renvoyer la réponse
       const analysisResult: AnalysisResponse = {
         attributes: {
-          color: clothingInfo.color,
-          colorName: clothingInfo.colorName,
-          category: clothingInfo.category,
-          pattern: clothingInfo.pattern,
-          style: clothingInfo.style
+          color: visionResult.mainColor,
+          category: visionResult.category,
+          pattern: visionResult.pattern,
+          style: visionResult.style,
+          colorName
         },
         products
       };
 
       return NextResponse.json(analysisResult);
-    } catch (apiError) {
-      console.error('API error:', apiError);
+    } catch (error) {
+      console.error('Error processing image:', error);
       
-      // En cas d'erreur avec les APIs Google, utiliser des données fictives
-      const fallbackData = generateFallbackData();
-      console.log('Using fallback data due to API error');
+      // En cas d'erreur avec les APIs Google, générer des données fictives
+      // pour que l'application continue de fonctionner
+      console.log('Generating fallback mock data...');
       
-      return NextResponse.json(fallbackData);
+      // Catégories fictives
+      const categories = ['robe', 't-shirt', 'pantalon', 'chemise', 'veste', 'pull'];
+      const colors = ['#ff0000', '#0000ff', '#008000', '#000000', '#ffffff', '#ffc0cb'];
+      const colorNames = ['rouge', 'bleu', 'vert', 'noir', 'blanc', 'rose'];
+      const patterns = ['uni', 'rayé', 'à carreaux', 'imprimé', 'fleuri'];
+      const styles = ['décontracté', 'élégant', 'sportif', 'formel', 'vintage'];
+      
+      // Sélection aléatoire d'attributs
+      const randomIndex = Math.floor(Math.random() * categories.length);
+      const patternIndex = Math.floor(Math.random() * patterns.length);
+      const styleIndex = Math.floor(Math.random() * styles.length);
+      
+      const category = categories[randomIndex];
+      const colorIndex = randomIndex;
+      const color = colors[colorIndex];
+      const colorName = colorNames[colorIndex];
+      const pattern = patterns[patternIndex];
+      const style = styles[styleIndex];
+      
+      // Générer des produits fictifs
+      const mockProducts: SearchResult[] = Array(8).fill(0).map((_, index) => {
+        const similarity = 0.95 - (index * 0.05);
+        
+        return {
+          id: `mock-${index}-${Date.now()}`,
+          name: `${style.charAt(0).toUpperCase() + style.slice(1)} ${category} ${pattern} ${colorName}`,
+          brand: ['Zara', 'H&M', 'Mango', 'Uniqlo', 'Asos', 'Zalando', 'Bershka', 'Pull & Bear'][index],
+          price: Math.floor(Math.random() * 50) + 19.99,
+          currency: '€',
+          imageUrl: `https://source.unsplash.com/random/300x400?${category},${colorName}`,
+          productUrl: 'https://example.com/product',
+          source: ['Zara', 'H&M', 'Mango', 'Uniqlo', 'Asos', 'Zalando', 'Bershka', 'Pull & Bear'][index],
+          similarity: parseFloat(similarity.toFixed(2))
+        };
+      });
+      
+      // Renvoyer les données fictives
+      const mockResult: AnalysisResponse = {
+        attributes: {
+          color,
+          category,
+          pattern,
+          style,
+          colorName
+        },
+        products: mockProducts
+      };
+
+      return NextResponse.json(mockResult);
     }
   } catch (error) {
-    console.error('General error analyzing image:', error);
+    console.error('Global error in analyze route:', error);
     return NextResponse.json(
       { error: 'Une erreur est survenue lors de l\'analyse de l\'image' },
       { status: 500 }
     );
   }
-}
-
-/**
- * Génère des données fictives en cas d'erreur avec les APIs
- */
-function generateFallbackData(): AnalysisResponse {
-  // Valeurs aléatoires pour la démonstration
-  const categories = ['t-shirt', 'robe', 'pantalon', 'chemise', 'veste', 'pull'];
-  const colors = ['#ff0000', '#0000ff', '#008000', '#000000', '#ffffff', '#ffc0cb'];
-  const colorNames = ['rouge', 'bleu', 'vert', 'noir', 'blanc', 'rose'];
-  const patterns = ['uni', 'rayé', 'à carreaux', 'imprimé', 'fleuri'];
-  const styles = ['décontracté', 'élégant', 'sportif', 'formel', 'vintage'];
-  
-  // Sélection aléatoire d'attributs
-  const randomIndex = Math.floor(Math.random() * categories.length);
-  const category = categories[randomIndex];
-  const colorIndex = randomIndex;
-  const color = colors[colorIndex];
-  const colorName = colorNames[colorIndex];
-  const pattern = patterns[Math.floor(Math.random() * patterns.length)];
-  const style = styles[Math.floor(Math.random() * styles.length)];
-  
-  // Générer des produits fictifs
-  const products: SearchResult[] = Array(8).fill(0).map((_, index) => {
-    const similarity = 0.95 - (index * 0.05);
-    
-    return {
-      id: `fallback-${index}`,
-      name: `${style.charAt(0).toUpperCase() + style.slice(1)} ${category} ${pattern} ${colorName}`,
-      brand: ['Zara', 'H&M', 'Mango', 'Uniqlo', 'Asos', 'Zalando', 'Bershka', 'Pull & Bear'][index],
-      price: Math.floor(Math.random() * 50) + 19.99,
-      currency: '€',
-      imageUrl: `https://source.unsplash.com/random/300x400?${category},${colorName}`,
-      productUrl: 'https://example.com/product',
-      source: ['Zara', 'H&M', 'Mango', 'Uniqlo', 'Asos', 'Zalando', 'Bershka', 'Pull & Bear'][index],
-      similarity: parseFloat(similarity.toFixed(2))
-    };
-  });
-  
-  return {
-    attributes: {
-      color,
-      colorName,
-      category,
-      pattern,
-      style
-    },
-    products
-  };
 }
