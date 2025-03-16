@@ -1,9 +1,8 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useDropzone } from 'react-dropzone';
 import axios from 'axios';
-import Image from 'next/image';
 import { AnalysisResponse } from './api/analyze/route';
 
 // Components
@@ -21,6 +20,14 @@ const LoadingSpinner = () => (
   </svg>
 );
 
+const FallbackImage = () => (
+  <div className="w-full h-full flex items-center justify-center bg-gray-100">
+    <svg className="w-8 h-8 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+    </svg>
+  </div>
+);
+
 export default function Home() {
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
@@ -28,11 +35,34 @@ export default function Home() {
   const [results, setResults] = useState<AnalysisResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dropActive, setDropActive] = useState(false);
+  const [analysisStage, setAnalysisStage] = useState<string | null>(null);
+
+  // Fonction pour formater le prix
+  const formatPrice = (price: number, currency: string) => {
+    return new Intl.NumberFormat('fr-FR', { 
+      style: 'currency', 
+      currency: currency === '€' ? 'EUR' : currency === '$' ? 'USD' : 'EUR'
+    }).format(price);
+  };
+
+  // Effet de nettoyage
+  useEffect(() => {
+    return () => {
+      if (preview) {
+        URL.revokeObjectURL(preview);
+      }
+    };
+  }, [preview]);
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
     if (acceptedFiles && acceptedFiles.length > 0) {
       const selectedFile = acceptedFiles[0];
       setFile(selectedFile);
+      
+      // Nettoyage du précédent preview si existe
+      if (preview) {
+        URL.revokeObjectURL(preview);
+      }
       
       // Create preview
       const objectUrl = URL.createObjectURL(selectedFile);
@@ -41,8 +71,9 @@ export default function Home() {
       // Reset states
       setResults(null);
       setError(null);
+      setAnalysisStage(null);
     }
-  }, []);
+  }, [preview]);
 
   const { getRootProps, getInputProps } = useDropzone({
     onDrop,
@@ -62,18 +93,27 @@ export default function Home() {
 
     setLoading(true);
     setError(null);
+    setAnalysisStage('Préparation de l\'image...');
 
     try {
       // Create form data to send the file
       const formData = new FormData();
       formData.append('image', file);
 
+      // Simuler les étapes d'analyse pour une meilleure expérience utilisateur
+      await new Promise(resolve => setTimeout(resolve, 800));
+      setAnalysisStage('Analyse des caractéristiques visuelles...');
+      
+      await new Promise(resolve => setTimeout(resolve, 1200));
+      setAnalysisStage('Recherche de produits similaires...');
+      
       // Send request to our API route
       const response = await axios.post('/api/analyze', formData, {
         headers: { 'Content-Type': 'multipart/form-data' }
       });
 
       setResults(response.data);
+      setAnalysisStage('Résultats trouvés !');
 
       // Scroll to results
       setTimeout(() => {
@@ -92,6 +132,7 @@ export default function Home() {
       }
     } finally {
       setLoading(false);
+      setAnalysisStage(null);
     }
   };
 
@@ -153,7 +194,7 @@ export default function Home() {
               {loading ? (
                 <>
                   <LoadingSpinner />
-                  Analyse en cours...
+                  {analysisStage || 'Analyse en cours...'}
                 </>
               ) : (
                 <>Rechercher des produits similaires</>
@@ -185,7 +226,7 @@ export default function Home() {
                       className="w-6 h-6 rounded-full mr-2 border border-gray-200" 
                       style={{ backgroundColor: results.attributes.color }}
                     ></div>
-                    <p className="text-lg font-semibold capitalize">{results.attributes.color}</p>
+                    <p className="text-lg font-semibold capitalize">{results.attributes.colorName}</p>
                   </div>
                 </div>
                 <div className="bg-gray-50 p-4 rounded-lg">
@@ -216,26 +257,33 @@ export default function Home() {
                   className="group card"
                 >
                   <div className="relative h-64 overflow-hidden bg-gray-100">
-                    <img 
-                      src={product.imageUrl} 
-                      alt={product.name} 
-                      className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
-                      onError={(e) => {
-                        const target = e.target as HTMLImageElement;
-                        target.src = 'https://via.placeholder.com/300x400?text=Image+Non+Disponible';
-                      }}
-                    />
+                    {product.imageUrl ? (
+                      <img 
+                        src={product.imageUrl} 
+                        alt={product.name} 
+                        className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
+                        onError={(e) => {
+                          const target = e.target as HTMLImageElement;
+                          target.src = 'https://via.placeholder.com/300x400?text=Image+Non+Disponible';
+                        }}
+                      />
+                    ) : (
+                      <FallbackImage />
+                    )}
                     <div className="absolute top-2 right-2 bg-primary-500 text-white text-xs font-bold rounded-full w-10 h-10 flex items-center justify-center">
                       {Math.round(product.similarity * 100)}%
                     </div>
                   </div>
                   <div className="p-4">
                     <div className="flex justify-between items-start mb-2">
-                      <p className="text-sm font-medium text-primary-600">{product.source}</p>
+                      <p className="text-sm font-medium text-primary-600">{product.brand || 'Marque'}</p>
+                      <div className="text-xs px-2 py-1 bg-gray-100 rounded-full text-gray-600">
+                        {product.source}
+                      </div>
                     </div>
                     <h3 className="font-medium text-gray-900 mb-2 line-clamp-2 h-12 text-sm md:text-base">{product.name}</h3>
                     <p className="font-bold text-lg text-primary-900">
-                      {product.price.toFixed(2)} {product.currency}
+                      {formatPrice(product.price, product.currency)}
                     </p>
                     <div className="mt-3 pt-3 border-t border-gray-100">
                       <span className="inline-flex items-center text-xs font-medium text-primary-600 group-hover:text-primary-800 transition-colors">
