@@ -1,60 +1,152 @@
-import axios from 'axios';
+/**
+ * Service d'analyse d'image avec Google Vision API
+ */
 
-export interface VisionApiResponse {
-  labelAnnotations: Array<{
-    description: string;
-    score: number;
-    mid: string;
-  }>;
-  colorInfo: {
-    dominantColors: {
-      colors: Array<{
-        color: {
-          red: number;
-          green: number;
-          blue: number;
-        };
-        score: number;
-        pixelFraction: number;
-      }>;
-    };
+interface ColorInfo {
+  color: {
+    red: number;
+    green: number;
+    blue: number;
   };
+  score: number;
+  pixelFraction: number;
+}
+
+export interface VisionResult {
+  colors: string[];
+  labels: string[];
+  mainColor: string;
+  category: string;
+  pattern: string;
+  style: string;
 }
 
 /**
- * Analyse une image avec Google Vision API
- * @param imageBase64 Image encodée en base64
+ * Analyser une image avec Google Vision API
  */
-export async function analyzeImageWithGoogleVision(imageBase64: string): Promise<VisionApiResponse> {
+export async function analyzeImageWithVision(imageBase64: string): Promise<VisionResult> {
   try {
     const apiKey = process.env.GOOGLE_VISION_API_KEY;
     
     if (!apiKey) {
-      throw new Error('Google Vision API Key is missing');
+      throw new Error('Google Vision API key is not configured');
     }
 
-    const response = await axios.post(
+    // Préparer la requête pour Google Vision API
+    const requestBody = {
+      requests: [
+        {
+          image: {
+            content: imageBase64,
+          },
+          features: [
+            { type: 'LABEL_DETECTION', maxResults: 15 },
+            { type: 'IMAGE_PROPERTIES', maxResults: 5 },
+          ],
+        },
+      ],
+    };
+
+    // Envoyer la requête à l'API
+    const response = await fetch(
       `https://vision.googleapis.com/v1/images:annotate?key=${apiKey}`,
       {
-        requests: [
-          {
-            image: {
-              content: imageBase64,
-            },
-            features: [
-              { type: 'LABEL_DETECTION', maxResults: 15 },
-              { type: 'IMAGE_PROPERTIES', maxResults: 5 },
-            ],
-          },
-        ],
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(requestBody),
       }
     );
 
-    const result = response.data.responses[0];
+    if (!response.ok) {
+      const errorData = await response.json();
+      console.error('Google Vision API Error:', errorData);
+      throw new Error(`Google Vision API error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    
+    // Extraire les labels (étiquettes)
+    const labels = data.responses[0]?.labelAnnotations?.map((label: any) => label.description.toLowerCase()) || [];
+    
+    // Extraire les couleurs dominantes
+    const colorInfo: ColorInfo[] = data.responses[0]?.imagePropertiesAnnotation?.dominantColors?.colors || [];
+    
+    // Convertir les couleurs RGB en hex
+    const colors = colorInfo.map((info) => 
+      rgbToHex(info.color.red, info.color.green, info.color.blue)
+    );
+    
+    // Analyse du contenu pour déterminer les attributs du vêtement
+    const mainColor = colorInfo.length > 0 ? rgbToHex(
+      colorInfo[0].color.red, 
+      colorInfo[0].color.green, 
+      colorInfo[0].color.blue
+    ) : '#000000';
+    
+    // Identifier la catégorie du vêtement
+    const clothingTypes = [
+      { terms: ['t-shirt', 'tee', 'tee-shirt'], category: 't-shirt' },
+      { terms: ['robe', 'dress'], category: 'robe' },
+      { terms: ['pantalon', 'jeans', 'pants', 'trousers'], category: 'pantalon' },
+      { terms: ['chemise', 'shirt', 'blouse'], category: 'chemise' },
+      { terms: ['veste', 'jacket', 'blazer'], category: 'veste' },
+      { terms: ['pull', 'sweater', 'pullover', 'sweatshirt', 'hoodie'], category: 'pull' },
+      { terms: ['manteau', 'coat'], category: 'manteau' },
+      { terms: ['jupe', 'skirt'], category: 'jupe' },
+      { terms: ['short', 'shorts'], category: 'short' },
+    ];
+    
+    let category = 'vêtement';
+    for (const type of clothingTypes) {
+      if (labels.some(label => type.terms.includes(label))) {
+        category = type.category;
+        break;
+      }
+    }
+    
+    // Identifier le motif
+    const patterns = [
+      { terms: ['stripes', 'striped', 'rayé', 'rayures'], pattern: 'rayé' },
+      { terms: ['dots', 'polka dots', 'spotted', 'pois'], pattern: 'à pois' },
+      { terms: ['checkered', 'checked', 'plaid', 'tartan', 'carreaux'], pattern: 'à carreaux' },
+      { terms: ['floral', 'flower', 'flowers', 'fleuri'], pattern: 'fleuri' },
+      { terms: ['print', 'printed', 'imprimé', 'pattern', 'motif'], pattern: 'imprimé' },
+    ];
+    
+    let pattern = 'uni';
+    for (const p of patterns) {
+      if (labels.some(label => p.terms.some(term => label.includes(term)))) {
+        pattern = p.pattern;
+        break;
+      }
+    }
+    
+    // Identifier le style
+    const styles = [
+      { terms: ['casual', 'décontracté', 'casual wear'], style: 'décontracté' },
+      { terms: ['formal', 'business', 'elegant', 'formel', 'élégant', 'chic'], style: 'élégant' },
+      { terms: ['sport', 'athletic', 'sportif', 'sportswear'], style: 'sportif' },
+      { terms: ['vintage', 'retro', 'rétro'], style: 'vintage' },
+      { terms: ['bohemian', 'boho', 'bohème'], style: 'bohème' },
+    ];
+    
+    let style = 'décontracté';
+    for (const s of styles) {
+      if (labels.some(label => s.terms.some(term => label.includes(term)))) {
+        style = s.style;
+        break;
+      }
+    }
     
     return {
-      labelAnnotations: result.labelAnnotations || [],
-      colorInfo: result.imagePropertiesAnnotation || { dominantColors: { colors: [] } }
+      colors,
+      labels,
+      mainColor,
+      category,
+      pattern,
+      style
     };
   } catch (error) {
     console.error('Error analyzing image with Google Vision:', error);
@@ -63,127 +155,55 @@ export async function analyzeImageWithGoogleVision(imageBase64: string): Promise
 }
 
 /**
- * Extraire les informations sur les vêtements des annotations
- */
-export function extractClothingInfo(visionResult: VisionApiResponse) {
-  // Liste de catégories de vêtements potentielles
-  const clothingCategories = [
-    'T-shirt', 't-shirt', 'tee-shirt', 'tee shirt', 'tshirt',
-    'chemise', 'shirt', 'top', 'blouse',
-    'robe', 'dress',
-    'jupe', 'skirt',
-    'pantalon', 'pants', 'trousers', 'jeans',
-    'veste', 'jacket', 'blazer',
-    'manteau', 'coat',
-    'pull', 'pullover', 'sweater', 'sweatshirt',
-    'hoodie', 'sweat à capuche',
-    'short', 'shorts',
-    'costume', 'suit'
-  ];
-
-  // Liste de styles vestimentaires
-  const styleCategories = [
-    'casual', 'décontracté',
-    'formal', 'formel', 'business',
-    'sport', 'sportif', 'athletic',
-    'vintage', 'retro',
-    'streetwear', 'street',
-    'elegant', 'élégant',
-    'bohemian', 'bohème',
-    'classic', 'classique',
-    'modern', 'moderne',
-    'minimalist', 'minimaliste'
-  ];
-
-  // Liste de motifs
-  const patternCategories = [
-    'plain', 'uni', 'solid',
-    'striped', 'rayé', 'stripes',
-    'checked', 'à carreaux', 'checkered',
-    'floral', 'fleuri',
-    'polka dot', 'pois',
-    'printed', 'imprimé',
-    'graphic', 'graphique',
-    'logo', 'branded',
-    'textured', 'texturé',
-    'patterned', 'motif'
-  ];
-
-  // Rechercher dans les labels pour trouver la catégorie
-  const category = visionResult.labelAnnotations
-    .find(label => 
-      clothingCategories.some(cat => 
-        label.description.toLowerCase().includes(cat.toLowerCase())
-      )
-    )?.description || 'vêtement';
-
-  // Rechercher dans les labels pour trouver le style
-  const style = visionResult.labelAnnotations
-    .find(label => 
-      styleCategories.some(s => 
-        label.description.toLowerCase().includes(s.toLowerCase())
-      )
-    )?.description || 'casual';
-
-  // Rechercher dans les labels pour trouver le motif
-  const pattern = visionResult.labelAnnotations
-    .find(label => 
-      patternCategories.some(p => 
-        label.description.toLowerCase().includes(p.toLowerCase())
-      )
-    )?.description || 'uni';
-
-  // Extraire la couleur dominante
-  const dominantColor = visionResult.colorInfo.dominantColors.colors[0]?.color || { red: 0, green: 0, blue: 0 };
-  
-  // Convertir RGB en HEX
-  const color = rgbToHex(dominantColor.red, dominantColor.green, dominantColor.blue);
-  
-  // Détecter le nom de la couleur
-  const colorName = detectColorName(dominantColor);
-
-  // Retourner les informations sur le vêtement
-  return {
-    category: category.toLowerCase(),
-    style: style.toLowerCase(),
-    pattern: pattern.toLowerCase(),
-    color,
-    colorName
-  };
-}
-
-/**
- * Convertir RGB en HEX
+ * Convertir RGB en code hexadécimal de couleur
  */
 function rgbToHex(r: number, g: number, b: number): string {
-  return '#' + [r, g, b]
-    .map(x => {
-      const hex = Math.round(x).toString(16);
-      return hex.length === 1 ? '0' + hex : hex;
-    })
-    .join('');
+  return "#" + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
 }
 
 /**
- * Détecter le nom de la couleur à partir des valeurs RGB
+ * Obtenir le nom d'une couleur à partir de son code hexadécimal
  */
-function detectColorName(color: { red: number, green: number, blue: number }): string {
-  const { red, green, blue } = color;
-  
-  // Couleurs de base
-  if (red > 200 && green < 100 && blue < 100) return 'rouge';
-  if (red < 100 && green > 200 && blue < 100) return 'vert';
-  if (red < 100 && green < 100 && blue > 200) return 'bleu';
-  if (red > 200 && green > 200 && blue < 100) return 'jaune';
-  if (red > 200 && green < 100 && blue > 200) return 'rose';
-  if (red < 100 && green > 150 && blue > 150) return 'turquoise';
-  if (red > 200 && green > 100 && blue < 100) return 'orange';
-  if (red > 130 && green < 100 && blue > 130) return 'violet';
-  if (red > 120 && green > 60 && blue < 50) return 'marron';
-  if (red < 50 && green < 50 && blue < 50) return 'noir';
-  if (red > 200 && green > 200 && blue > 200) return 'blanc';
-  if (red > 100 && green > 100 && blue > 100 && red < 200 && green < 200 && blue < 200) return 'gris';
-  
-  // Par défaut
-  return 'multicolore';
+export function getColorName(hex: string): string {
+  // Liste de couleurs de base avec leurs codes hex approximatifs
+  const colors = [
+    { name: 'rouge', hex: '#FF0000' },
+    { name: 'vert', hex: '#00FF00' },
+    { name: 'bleu', hex: '#0000FF' },
+    { name: 'jaune', hex: '#FFFF00' },
+    { name: 'orange', hex: '#FFA500' },
+    { name: 'violet', hex: '#800080' },
+    { name: 'rose', hex: '#FFC0CB' },
+    { name: 'marron', hex: '#A52A2A' },
+    { name: 'gris', hex: '#808080' },
+    { name: 'noir', hex: '#000000' },
+    { name: 'blanc', hex: '#FFFFFF' }
+  ];
+
+  // Convertir le hex en RGB
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+
+  // Trouver la couleur la plus proche
+  let closestColor = colors[0];
+  let closestDistance = 1000000;
+
+  for (const color of colors) {
+    const cr = parseInt(color.hex.slice(1, 3), 16);
+    const cg = parseInt(color.hex.slice(3, 5), 16);
+    const cb = parseInt(color.hex.slice(5, 7), 16);
+
+    // Calculer la distance euclidienne dans l'espace RGB
+    const distance = Math.sqrt(
+      Math.pow(r - cr, 2) + Math.pow(g - cg, 2) + Math.pow(b - cb, 2)
+    );
+
+    if (distance < closestDistance) {
+      closestDistance = distance;
+      closestColor = color;
+    }
+  }
+
+  return closestColor.name;
 }
